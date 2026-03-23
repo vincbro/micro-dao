@@ -21,6 +21,8 @@
             pkgs.python314
             pkgs.uv
             pkgs.pkg-config
+            pkgs.ruff
+            pkgs.basedpyright
           ];
 
           buildInputs = [
