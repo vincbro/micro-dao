@@ -12,87 +12,122 @@ def main():
 
     args = sys.argv
     if len(args) < 2:
-        print("Missing price data")
+        print("Usage: python main.py <file1.json> <file2.json> ...")
         os._exit(1)
         
-    path = args[1]
-    print(f"Opening and parsing {path}")
+    filepaths = args[1:]
+
+    START_HEALTH = 45.0
     
-    snapshots: list[PriceSnapshot] = []
-    with open(path) as file:
-        data = json.load(file)
-        for row in data:
-            start = datetime.datetime.fromisoformat(row["time_start"])
-            end = datetime.datetime.fromisoformat(row["time_end"])
-            price_sek = row["SEK_per_kWh"]
-            price_eur = row["EUR_per_kWh"]
-            snapshot = PriceSnapshot(price_sek, price_eur, start, end)
-            snapshots.append(snapshot)
-
-    base_twin = DigitalTwin(45.0)
-    current_eff = base_twin.current_efficiency_kwh_per_kg()
-    capex_penalty = base_twin.financial_cost_of_start()
-
-    print("Running MILP Optimizer...")
-    milp_schedule = optimize_with_milp(
-        snapshots, TARGET_KG, capex_penalty, current_eff, ELECTROLYZER_CAPACITY_KW
-    )
+    milp_twin = DigitalTwin(START_HEALTH)
+    greedy_twin = DigitalTwin(START_HEALTH)
     
-    print("Running Greedy EMS Optimizer...")
-    greedy_schedule = static_optimizer(
-        snapshots, TARGET_KG, current_eff, ELECTROLYZER_CAPACITY_KW
-    )
+    weekly_milp_opex = 0.0
+    weekly_milp_capex = 0.0
+    weekly_milp_starts = 0
+    
+    weekly_greedy_opex = 0.0
+    weekly_greedy_capex = 0.0
+    weekly_greedy_starts = 0
 
-    milp_twin, milp_opex, milp_starts = calculate_cost(
-        base_twin, milp_schedule, ELECTROLYZER_CAPACITY_KW
-    )
-    greedy_twin, greedy_opex, greedy_starts = calculate_cost(
-        base_twin, greedy_schedule, ELECTROLYZER_CAPACITY_KW
-    )
+    print(f"Starting Multi-Day Simulation ({len(filepaths)} days)...")
 
-    starts_avoided = greedy_starts - milp_starts
+    for path in filepaths:
+        filename = os.path.basename(path)
+        
+        snapshots: list[PriceSnapshot] = []
+        with open(path) as file:
+            data = json.load(file)
+            for row in data:
+                start = datetime.datetime.fromisoformat(row["time_start"])
+                end = datetime.datetime.fromisoformat(row["time_end"])
+                price_sek = row["SEK_per_kWh"]
+                price_eur = row["EUR_per_kWh"]
+                snapshot = PriceSnapshot(price_sek, price_eur, start, end)
+                snapshots.append(snapshot)
+
+        milp_eff = milp_twin.current_efficiency_kwh_per_kg()
+        milp_capex_pen = milp_twin.financial_cost_of_start()
+        milp_schedule = optimize_with_milp(
+            snapshots, TARGET_KG, milp_capex_pen, milp_eff, ELECTROLYZER_CAPACITY_KW
+        )
+        
+        greedy_eff = greedy_twin.current_efficiency_kwh_per_kg()
+        greedy_capex_pen = greedy_twin.financial_cost_of_start()
+        greedy_schedule = static_optimizer(
+            snapshots, TARGET_KG, greedy_eff, ELECTROLYZER_CAPACITY_KW
+        )
+
+        milp_twin, daily_milp_opex, daily_milp_starts = calculate_cost(
+            milp_twin, milp_schedule, ELECTROLYZER_CAPACITY_KW
+        )
+        greedy_twin, daily_greedy_opex, daily_greedy_starts = calculate_cost(
+            greedy_twin, greedy_schedule, ELECTROLYZER_CAPACITY_KW
+        )
+
+        # Calculate CAPEX cost based on the exact penalty for this specific day
+        daily_milp_capex = daily_milp_starts * milp_capex_pen
+        daily_greedy_capex = daily_greedy_starts * greedy_capex_pen
+
+        # Accumulate totals
+        weekly_milp_opex += daily_milp_opex
+        weekly_milp_capex += daily_milp_capex
+        weekly_milp_starts += daily_milp_starts
+
+        weekly_greedy_opex += daily_greedy_opex
+        weekly_greedy_capex += daily_greedy_capex
+        weekly_greedy_starts += daily_greedy_starts
+
+        daily_milp_total = daily_milp_opex + daily_milp_capex
+        daily_greedy_total = daily_greedy_opex + daily_greedy_capex
+        
+        print("\n" + "="*65)
+        print(f" DAILY BENCHMARK: {filename}")
+        print("="*65)
+        
+        print(" [1] STANDARD EMS (Greedy Optimization)")
+        print(f"     Start/Stop Cycles:   {daily_greedy_starts}")
+        print(f"     Current Health:      {greedy_twin.health * 100:.4f}%")
+        print(f"     Daily Cost (+Wear):  {daily_greedy_total:.2f} SEK")
+        print_schedule_timeline(greedy_schedule, "Greedy EMS")
+        print("-" * 65)
+        
+        print(" [2] micro-dao (MILP Optimization)")
+        print(f"     Start/Stop Cycles:   {daily_milp_starts}")
+        print(f"     Current Health:      {milp_twin.health * 100:.4f}%")
+        print(f"     Daily Cost (+Wear):  {daily_milp_total:.2f} SEK")
+        print_schedule_timeline(milp_schedule, "MILP DAO")
+
+    weekly_milp_total = weekly_milp_opex + weekly_milp_capex
+    weekly_greedy_total = weekly_greedy_opex + weekly_greedy_capex
+    
+    total_savings_sek = weekly_greedy_total - weekly_milp_total
+    starts_avoided = weekly_greedy_starts - weekly_milp_starts
     health_saved_pct = (milp_twin.health - greedy_twin.health) * 100
-    
-    milp_total_cost = milp_opex + (milp_starts * capex_penalty)
-    greedy_total_cost = greedy_opex + (greedy_starts * capex_penalty)
-    
-    total_savings_sek = greedy_total_cost - milp_total_cost
 
     print("\n" + "="*65)
-    print(" SYSTEM BENCHMARK: STANDARD EMS vs DEGRADATION-AWARE MILP")
+    print(" PERIOD SUMMARY")
     print("="*65)
-    print(f" Target Production:       {TARGET_KG:.1f} kg H2")
-    print(f" Electrolyzer Capacity:   {ELECTROLYZER_CAPACITY_KW:.0f} kW")
+    print(f" Total Days Processed:    {len(filepaths)}")
+    print(f" Total Avoided Cycles:    {starts_avoided} unnecessary starts")
+    print(f" Preserved Health:        +{health_saved_pct:.6f}% stack life saved")
     print("-" * 65)
-    
-    print(" [1] STANDARD EMS (Greedy Optimization)")
-    print(f"     Start/Stop Cycles:   {greedy_starts}")
-    print(f"     Final Stack Health:  {greedy_twin.health * 100:.4f}%")
-    print(f"     Realized OPEX:       {greedy_opex:.2f} SEK")
-    print(f"     True Cost (+Wear):   {greedy_total_cost:.2f} SEK")
-    print("")
-    print_schedule_timeline(greedy_schedule, "Greedy EMS")
+    print(f" GREEDY TOTAL COST:       {weekly_greedy_total:.2f} SEK")
+    print(f"   - Total OPEX:          {weekly_greedy_opex:.2f} SEK")
+    print(f"   - Total CAPEX (Wear):  {weekly_greedy_capex:.2f} SEK")
     print("-" * 65)
-    
-    print(" [2] micro-dao (MILP Optimization)")
-    print(f"     Start/Stop Cycles:   {milp_starts}")
-    print(f"     Final Stack Health:  {milp_twin.health * 100:.4f}%")
-    print(f"     Realized OPEX:       {milp_opex:.2f} SEK")
-    print(f"     True Cost (+Wear):   {milp_total_cost:.2f} SEK")
-    print("")
-    print_schedule_timeline(milp_schedule, "MILP DAO")
+    print(f" MILP TOTAL COST:         {weekly_milp_total:.2f} SEK")
+    print(f"   - Total OPEX:          {weekly_milp_opex:.2f} SEK")
+    print(f"   - Total CAPEX (Wear):  {weekly_milp_capex:.2f} SEK")
     print("="*65)
-    
-    print(" THE DAO ADVANTAGE (Daily Impact)")
-    print(f"     Avoided Wear Cycles: {starts_avoided} unnecessary starts")
-    print(f"     Preserved Health:    +{health_saved_pct:.6f}% stack life saved")
     if total_savings_sek > 0:
-        print(f"     Total Cost Savings:  {total_savings_sek:.2f} SEK saved today")
+        print(f" NET FINANCIAL IMPACT:    {total_savings_sek:.2f} SEK SAVED THIS PERIOD")
     else:
-        print(f"     Total Cost Impact:   {total_savings_sek:.2f} SEK (Paid extra OPEX to save CAPEX)")
+        print(f" NET FINANCIAL IMPACT:    {total_savings_sek:.2f} SEK (Paid extra OPEX to save CAPEX)")
     print("="*65 + "\n")
 
 def calculate_cost(twin: DigitalTwin, schedule: list[ScheduleState], capacity_kw: float) -> tuple[DigitalTwin, float, int]:
+    # Creates a cloned twin so we don't accidentally mutate state during evaluation
     twin_copy = DigitalTwin(twin.health * 100)
     opex_cost = 0.0
     starts = 0
