@@ -27,16 +27,22 @@ The power grid exposes data in rigid 15-minute discrete blocks, but our producti
 - This allows the solver to run at 100% capacity for a fraction of an interval (e.g., 9 minutes of a 15-minute block) and schedule a hard `SIGSTOP` the exact millisecond the quota is satisfied, preventing wasted OPEX.
 
 #### 3. Constraint Hardening (The "Ghost-Run" Loophole)
-Mathematical solvers are inherently "lazy" and will exploit any unbound edge cases. If instructed to maintain an "ON" state for 4 hours to avoid a shutdown penalty, the solver might attempt to run at a 0.01% fractional load—technically satisfying the state requirement without paying for electricity.
+Mathematical solvers are inherently "lazy" and will exploit any unbound edge cases. If instructed to maintain an "ON" state for 4 hours to avoid a shutdown penalty, the solver might attempt to run at a 0.01% fractional load, technically satisfying the state requirement without paying for electricity.
 - We harden the model against this using a strict adjacency constraint: `x[i] >= y[i] + y[i + 1] - 1`.
 - *Translation:* If the system claims to be continuously ON across multiple intervals, it **must** run at exactly 100% capacity and pay the full market rate. Fractional loads are strictly bounded to the terminal interval immediately preceding a state shutdown.
 
 ### The Outcome: Global vs. Local Optima
-By feeding raw market snapshots and real-time state data into the MILP solver, `micro-dao` completely avoids the pitfalls of local optima. The system will frequently choose to ignore a localized 15-minute dip in electricity prices if capturing it requires a state transition. Instead, it shifts the entire production block to a slightly more expensive—but completely contiguous—time window, radically reducing unnecessary wear cycles while hitting precise production targets.
+By feeding raw market snapshots and real-time state data into the MILP solver, `micro-dao` completely avoids the pitfalls of local optima. The system will frequently choose to ignore a localized 15-minute dip in electricity prices if capturing it requires a state transition. Instead, it shifts the entire production block to a slightly more expensive, but completely contiguous time window, radically reducing unnecessary wear cycles while hitting precise production targets.
 
 Here is the updated **How to Run** section. It integrates `uv run` as the execution method and adds a great technical explanation of how the `--health` flag demonstrates the dynamic constraint generation we built into the MILP solver.
 
-You can replace the previous section in your `README.md` with this:
+### Future Improvements
+
+If I had more time to expand the `DigitalTwin` simulation, I would look into bridging the gap between our current financial-state model and true physical electrochemistry:
+
+- **Continuous Thermal Decay:** Right now, the penalty for starting up is static and based entirely on overall stack health. I'd like to implement a thermal mass model that tracks how long the system has been offline. This would let the MILP solver differentiate between a low-penalty "warm start" (restarting after 30 minutes) and a high-penalty "cold start" (restarting after 12 hours).
+- **Non-Linear Efficiency (Polarization Curves):** The current solver assumes flat, linear production efficiency. Because real electrolyzers operate on a curve and lose efficiency at maximum load, I'd like to use piecewise linear approximation to let the solver hunt for the thermodynamic "sweet spot" (e.g., running at 65% capacity for a longer duration to maximize hydrogen yield).
+- **Component-Specific Wear:** Instead of a single global health percentage, I'd like to split degradation into specific vectors (like membrane thinning vs. catalyst loss). The optimizer could then dynamically generate constraints to protect the hardware's weakest link at any given time.
 
 ## Running the Simulation
 
@@ -76,3 +82,4 @@ As the stack degrades, it becomes highly sensitive to thermal cycling. The cost 
 ```bash
 uv run src/main.py --health 15.0 data/*
 ```
+
