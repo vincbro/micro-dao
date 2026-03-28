@@ -15,9 +15,6 @@ def optimize_with_milp(
     capacity_kw: float,
     solver_time_limit_s: int = 60,
 ) -> list[ScheduleState]:
-    """
-    Optimises hydrogen production schedule using Mixed-Integer Linear Programming.
-    """
     if not snapshots:
         raise ValueError("snapshots must not be empty.")
     if target_kg <= 0:

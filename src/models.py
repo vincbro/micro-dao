@@ -41,13 +41,11 @@ class DigitalTwin:
         self.REPLACEMENT_COST = 2_000_000 # The cost to replace a stack
       
     def current_efficiency_kwh_per_kg(self) -> float:
-        """Calculates how much energy is currently required to make 1kg of H2."""
         # E_req(H) = E_base * (1 + delta_max * (1 - H))
         penalty_factor = self.MAX_DEGRADATION_PENALTY * (1.0 - self.health)
         return self.BASE_EFFICIENCY * (1.0 + penalty_factor)
 
     def damage_from_start_cycle(self) -> float:
-        """Calculates the % of health lost from a cold start based on current fragility."""
         # Prevent division by zero if health is completely 0
         safe_health = max(self.health, 0.01)
         
@@ -56,11 +54,9 @@ class DigitalTwin:
         return wear
 
     def apply_start_cycle(self) -> None:
-        """Mutates the state to apply the damage of turning the machine on."""
         damage = self.damage_from_start_cycle()
         self.health = max(0.0, self.health - damage)
 
     def financial_cost_of_start(self) -> float:
-        """Translates the health damage of a start cycle into a monetary CAPEX cost."""
         damage_pct = self.damage_from_start_cycle()
         return self.REPLACEMENT_COST * damage_pct
