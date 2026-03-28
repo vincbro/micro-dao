@@ -16,20 +16,20 @@ To enforce physical and logical reality, the algorithm applies a strict set of m
 
 #### 1. Dynamic Constraint Generation (Uptime/Downtime)
 We do not hardcode static configuration values (e.g., `MIN_UPTIME = 2h`). Instead, the optimizer generates these bounds dynamically at runtime based on the system's current state. 
-* It evaluates market volatility (the spread between average and minimum prices).
-* It pulls the real-time financial penalty of a startup event from the Digital Twin.
-* **`Dynamic Minimum Uptime = CAPEX Penalty / Hourly OPEX Savings`**
-* *Result:* The algorithm self-adjusts. On days with flat pricing, it stretches the minimum uptime constraint to force continuous baseload operation. On highly volatile days, it shrinks the constraint, allowing the system to rapidly capitalize on severe price drops.
+- It evaluates market volatility (the spread between average and minimum prices).
+- It pulls the real-time financial penalty of a startup event from the Digital Twin.
+- **`Dynamic Minimum Uptime = CAPEX Penalty / Hourly OPEX Savings`**
+- *Result:* The algorithm self-adjusts. On days with flat pricing, it stretches the minimum uptime constraint to force continuous baseload operation. On highly volatile days, it shrinks the constraint, allowing the system to rapidly capitalize on severe price drops.
 
 #### 2. Sub-Interval Precision & Target Satisfaction
 The power grid exposes data in rigid 15-minute discrete blocks, but our production target (`TARGET_KG`) requires continuous precision. If constrained only to binary blocks, the system would constantly over-provision or under-provision.
-* The MILP model solves this using a hybrid variable space: it pairs a binary state variable (`y` for ON/OFF) with a continuous fractional variable (`x` for active duration).
-* This allows the solver to run at 100% capacity for a fraction of an interval (e.g., 9 minutes of a 15-minute block) and schedule a hard `SIGSTOP` the exact millisecond the quota is satisfied, preventing wasted OPEX.
+- The MILP model solves this using a hybrid variable space: it pairs a binary state variable (`y` for ON/OFF) with a continuous fractional variable (`x` for active duration).
+- This allows the solver to run at 100% capacity for a fraction of an interval (e.g., 9 minutes of a 15-minute block) and schedule a hard `SIGSTOP` the exact millisecond the quota is satisfied, preventing wasted OPEX.
 
 #### 3. Constraint Hardening (The "Ghost-Run" Loophole)
 Mathematical solvers are inherently "lazy" and will exploit any unbound edge cases. If instructed to maintain an "ON" state for 4 hours to avoid a shutdown penalty, the solver might attempt to run at a 0.01% fractional load—technically satisfying the state requirement without paying for electricity.
-* We harden the model against this using a strict adjacency constraint: `x[i] >= y[i] + y[i + 1] - 1`.
-* *Translation:* If the system claims to be continuously ON across multiple intervals, it **must** run at exactly 100% capacity and pay the full market rate. Fractional loads are strictly bounded to the terminal interval immediately preceding a state shutdown.
+- We harden the model against this using a strict adjacency constraint: `x[i] >= y[i] + y[i + 1] - 1`.
+- *Translation:* If the system claims to be continuously ON across multiple intervals, it **must** run at exactly 100% capacity and pay the full market rate. Fractional loads are strictly bounded to the terminal interval immediately preceding a state shutdown.
 
 ### The Outcome: Global vs. Local Optima
 By feeding raw market snapshots and real-time state data into the MILP solver, `micro-dao` completely avoids the pitfalls of local optima. The system will frequently choose to ignore a localized 15-minute dip in electricity prices if capturing it requires a state transition. Instead, it shifts the entire production block to a slightly more expensive—but completely contiguous—time window, radically reducing unnecessary wear cycles while hitting precise production targets.

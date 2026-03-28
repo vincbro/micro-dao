@@ -5,7 +5,5 @@ description = ""
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "polars>=1.39.3",
     "pulp>=3.3.0",
-    "result>=0.17.0",
 ]
