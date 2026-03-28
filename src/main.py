@@ -1,23 +1,32 @@
+import argparse
 import datetime
 import json
 import os
-import sys
 
-from models import DigitalTwin, ScheduleState, PriceSnapshot
+from models import DigitalTwin, PriceSnapshot, ScheduleState
 from optimizer import optimize_with_milp, static_optimizer
+
 
 def main():
     TARGET_KG = 300.0
     ELECTROLYZER_CAPACITY_KW = 1000.0
 
-    args = sys.argv
-    if len(args) < 2:
-        print("Usage: python main.py <file1.json> <file2.json> ...")
-        os._exit(1)
-        
-    filepaths = args[1:]
-
-    START_HEALTH = 45.0
+    parser = argparse.ArgumentParser(description="Simulate and compare MILP vs Greedy EMS optimizers.")
+    parser.add_argument(
+        "filepaths", 
+        nargs="+", 
+        help="One or more JSON files containing day-ahead price snapshots"
+    )
+    parser.add_argument(
+        "--health", 
+        type=float, 
+        default=45.0, 
+        help="Starting stack health percentage [0.0 - 100.0] (default: 45.0)"
+    )
+    
+    args = parser.parse_args()
+    filepaths = args.filepaths
+    START_HEALTH = args.health
     
     milp_twin = DigitalTwin(START_HEALTH)
     greedy_twin = DigitalTwin(START_HEALTH)

@@ -1,45 +1,78 @@
-	
-# micro-dao: Intelligent Electrolyzer Scheduling
+# System Architecture: The MILP Optimization Engine
 
-A lightweight, high-performance Python simulation of an intelligent optimization layer for electrolyzer operations. This tool schedules hydrogen production to minimize the true Levelized Cost of Hydrogen (LCOH) by balancing day-ahead electricity spot prices against the CAPEX cost of stack degradation.
+The standard approach to Energy Management Systems (EMS) is a **Greedy Algorithm**. A greedy system looks at a dataset of Day-Ahead electricity prices, selects the cheapest 15-minute discrete blocks, and schedules production. 
 
-## The Problem: The Standard EMS Flaw
-Existing energy management systems were designed for power plants and grid applications. They optimize for one variable: energy cost. For hydrogen production, this is incomplete. 
+While computationally cheap, greedy algorithms suffer from tunnel vision: they optimize strictly for **OPEX** (energy cost) and completely ignore the cost of **state mutations**. 
 
-Dynamic operation accelerates cell degradation. Every ramp, load change, and start-stop cycle wears down electrolyzer stacks. Standard EMS platforms optimize energy cost without accounting for degradation costs per cycle. A standard EMS might shut down an electrolyzer to dodge a minor electricity price spike, unwittingly causing severe physical stack damage. 
+In physical systems, changing state (a "Cold Start" of the electrolyzer) incurs a heavy **CAPEX** penalty via hardware degradation. A greedy algorithm might flip the system state ON and OFF 10 times a day to chase micro-fluctuations in power prices, ultimately destroying multi-million SEK hardware to save a few pennies in electricity.
 
-## The Solution: Degradation-Aware Operation (DAO)
-`micro-dao` implements a physics-aware scheduling engine based on the concept of Degradation Aware Operation. It produces production schedules that minimize total hydrogen cost, not just today's electricity bill, but the full cost including stack degradation. 
+**micro-dao solves this by using Mixed-Integer Linear Programming (MILP) to find the absolute global optimum, balancing OPEX savings against CAPEX state-mutation penalties.**
 
-Every ramp has a CAPEX cost. DAO quantifies it and includes it in every scheduling decision.
+### The Objective Function
+Instead of routing blindly based on price, the `pulp` MILP solver treats the electrolyzer as a stateful machine and minimizes a unified cost function:
+> **Minimize:** `(Energy Price * Power * Time) + (CAPEX Penalty * State Transition Events)`
 
-### Key Features
-* **Sub-Hour Precision:** Spot prices are hourly, but real-world control systems operate in seconds. `micro-dao` allocates production time down to the exact second, allowing it to cut off production mid-hour once the hydrogen target is perfectly met.
-* **Gap-Filling Heuristic:** The algorithm evaluates "OFF" gaps in the schedule. If the cost of running through an expensive price spike is lower than the CAPEX wear penalty of a start/stop cycle, it bridges the gap, prioritizing stack lifetime extension.
-* **Resolution & Horizon Agnostic:** The core optimization engine is completely decoupled from fixed time boundaries. It does not assume 24-hour windows or 60-minute intervals. Whether fed a 15-minute high-frequency trading window or a multi-year historical dataset, the mathematics and degradation physics scale natively.
-* **Digital Twin Foundations:** The architecture is prepared for a physics-based model where stack health impacts both electrical efficiency and cold-start energy requirements over time.
+To enforce physical and logical reality, the algorithm applies a strict set of mathematical constraints:
 
-## Algorithm Runtime Flow
-To solve the degradation routing problem without importing heavy, slow mathematical solvers, `micro-dao` utilizes a lightning-fast, multi-pass pipeline to balance OPEX (electricity) against CAPEX (stack degradation).
+#### 1. Dynamic Constraint Generation (Uptime/Downtime)
+We do not hardcode static configuration values (e.g., `MIN_UPTIME = 2h`). Instead, the optimizer generates these bounds dynamically at runtime based on the system's current state. 
+* It evaluates market volatility (the spread between average and minimum prices).
+* It pulls the real-time financial penalty of a startup event from the Digital Twin.
+* **`Dynamic Minimum Uptime = CAPEX Penalty / Hourly OPEX Savings`**
+* *Result:* The algorithm self-adjusts. On days with flat pricing, it stretches the minimum uptime constraint to force continuous baseload operation. On highly volatile days, it shrinks the constraint, allowing the system to rapidly capitalize on severe price drops.
 
-**Phase 1: The Energy Baseline (OPEX Minimization)**
-1. The system ingests the electricity price data.
-2. It sorts these snapshots from cheapest to most expensive.
-3. It allocates the required production time strictly to the cheapest available periods, clipping the final period to the exact second. 
+#### 2. Sub-Interval Precision & Target Satisfaction
+The power grid exposes data in rigid 15-minute discrete blocks, but our production target (`TARGET_KG`) requires continuous precision. If constrained only to binary blocks, the system would constantly over-provision or under-provision.
+* The MILP model solves this using a hybrid variable space: it pairs a binary state variable (`y` for ON/OFF) with a continuous fractional variable (`x` for active duration).
+* This allows the solver to run at 100% capacity for a fraction of an interval (e.g., 9 minutes of a 15-minute block) and schedule a hard `SIGSTOP` the exact millisecond the quota is satisfied, preventing wasted OPEX.
 
-**Phase 2: Timeline Reconstruction**
-1. The allocated "ON" periods are re-sorted back into a chronological timeline. 
-2. This reveals the physical reality of a standard EMS schedule: highly fragmented operations with multiple "OFF" gaps as the system blindly dodges minor price spikes.
+#### 3. Constraint Hardening (The "Ghost-Run" Loophole)
+Mathematical solvers are inherently "lazy" and will exploit any unbound edge cases. If instructed to maintain an "ON" state for 4 hours to avoid a shutdown penalty, the solver might attempt to run at a 0.01% fractional load—technically satisfying the state requirement without paying for electricity.
+* We harden the model against this using a strict adjacency constraint: `x[i] >= y[i] + y[i + 1] - 1`.
+* *Translation:* If the system claims to be continuously ON across multiple intervals, it **must** run at exactly 100% capacity and pay the full market rate. Fractional loads are strictly bounded to the terminal interval immediately preceding a state shutdown.
 
-**Phase 3: Degradation Aware Optimization (CAPEX vs OPEX)**
-1. The algorithm runs a second, chronological optimization pass over the timeline.
-2. For every "OFF" gap, it calculates a cost-minimization function: *Is the extra OPEX (electricity cost) of running straight through this gap cheaper than the CAPEX wear penalty of a cold shutdown and restart?*
-3. If running is cheaper than restarting, the algorithm "bridges the gap," overriding the standard EMS baseline. 
-4. The system dynamically scales this CAPEX penalty based on the `DigitalTwin`'s current Stack Health, becoming more conservative (preferring baseload operation) as the stack ages.
+### The Outcome: Global vs. Local Optima
+By feeding raw market snapshots and real-time state data into the MILP solver, `micro-dao` completely avoids the pitfalls of local optima. The system will frequently choose to ignore a localized 15-minute dip in electricity prices if capturing it requires a state transition. Instead, it shifts the entire production block to a slightly more expensive—but completely contiguous—time window, radically reducing unnecessary wear cycles while hitting precise production targets.
 
-## How to Run (One-Command Setup)
-Developer empathy is critical. You do not need to fight with virtual environments or version conflicts to evaluate this code. This project uses `uv` (an extremely fast Python package manager written in Rust) to handle dependencies instantly.
+Here is the updated **How to Run** section. It integrates `uv run` as the execution method and adds a great technical explanation of how the `--health` flag demonstrates the dynamic constraint generation we built into the MILP solver.
+
+You can replace the previous section in your `README.md` with this:
+
+## Running the Simulation
+
+This project uses `uv` for dependency management. To execute the standard multi-day benchmark against the provided market data, run:
 
 ```bash
-uv run main.py
+uv run src/main.py data/*
+# OR
+./run.sh
+```
+
+### What happens during execution?
+When you trigger the simulation, the engine performs the following pipeline:
+1. **Data Ingestion:** Parses the 15-minute resolution spot price snapshots (`JSON`).
+2. **State Initialization:** Spawns two isolated `DigitalTwin` instances (one for MILP, one for Greedy) starting at identical stack health levels.
+3. **Chronological Routing:** Feeds the daily snapshots into both optimization engines. 
+4. **State Mutation:** Calculates the physical wear (CAPEX) and electricity usage (OPEX) incurred by each schedule, permanently degrading the health of the respective `DigitalTwin` before passing it to the next day.
+5. **Reporting:** Outputs a daily terminal report and rolls up the compounding degradation into a final **Net Financial Impact** summary.
+
+### Simulating Degradation Behavior (The `--health` Flag)
+
+The true power of the `micro-dao` MILP optimizer is its ability to dynamically recalculate its minimum uptime constraints based on the real-time physical fragility of the hardware. 
+
+You can use the `--health` flag to observe how the routing algorithm shifts its priority from **OPEX** (when the stack is new) to **CAPEX** (when the stack is degraded).
+
+#### 1. The "Brand New" Stack (Prioritizes OPEX)
+
+When the electrolyzer is brand new, the physical damage (and financial penalty) of a cold start is relatively low. The solver will willingly transition states more frequently to chase cheaper electricity prices.
+
+```bash
+uv run src/main.py --health 100.0 data/*
+```
+
+#### 2. The "End-of-Life" Stack (Prioritizes CAPEX)
+
+As the stack degrades, it becomes highly sensitive to thermal cycling. The cost of a cold start becomes massive. If you start the simulation with a heavily degraded stack, you will see the MILP solver drastically stretch its minimum uptime constraints. It will actively choose to run through expensive electricity price peaks (paying higher OPEX) just to avoid the devastating CAPEX penalty of shutting down and restarting.
+```bash
+uv run src/main.py --health 15.0 data/*
 ```
