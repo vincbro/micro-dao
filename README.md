@@ -1,9 +1,6 @@
-<video controls src="https://github.com/vincbro/micro-dao/raw/main/demo/demo.mp4"></video>
-
-
-
-
 # System Architecture: The MILP Optimization Engine
+
+[Watch demo](https://youtu.be/A1W0hbRz9kY)
 
 The standard approach to Energy Management Systems (EMS) is a **Greedy Algorithm**. A greedy system looks at a dataset of Day-Ahead electricity prices, selects the cheapest 15-minute discrete blocks, and schedules production. 
 
