@@ -36,7 +36,6 @@ Mathematical solvers are inherently "lazy" and will exploit any unbound edge cas
 ### The Outcome: Global vs. Local Optima
 By feeding raw market snapshots and real-time state data into the MILP solver, `micro-dao` completely avoids the pitfalls of local optima. The system will frequently choose to ignore a localized 15-minute dip in electricity prices if capturing it requires a state transition. Instead, it shifts the entire production block to a slightly more expensive, but completely contiguous time window, radically reducing unnecessary wear cycles while hitting precise production targets.
 
-Here is the updated **How to Run** section. It integrates `uv run` as the execution method and adds a great technical explanation of how the `--health` flag demonstrates the dynamic constraint generation we built into the MILP solver.
 
 ### Future Improvements
 
