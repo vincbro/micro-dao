@@ -8,7 +8,7 @@ While computationally cheap, greedy algorithms suffer from tunnel vision: they o
 
 In physical systems, changing state (a "Cold Start" of the electrolyzer) incurs a heavy **CAPEX** penalty via hardware degradation. A greedy algorithm might flip the system state ON and OFF 10 times a day to chase micro-fluctuations in power prices, ultimately destroying multi-million SEK hardware to save a few pennies in electricity.
 
-**micro-dao solves this by using Mixed-Integer Linear Programming (MILP) to find the absolute global optimum, balancing OPEX savings against CAPEX state-mutation penalties.**
+**micro-dao solves this by using Mixed-Integer Linear Programming (MILP) to find the absolute global optimum, balancing OPEX savings against CAPEX state-mutation penalties while respecting physical storage limits.**
 
 ### The Objective Function
 Instead of routing blindly based on price, the `pulp` MILP solver treats the electrolyzer as a stateful machine and minimizes a unified cost function:
@@ -23,19 +23,24 @@ We do not hardcode static configuration values (e.g., `MIN_UPTIME = 2h`). Instea
 - **`Dynamic Minimum Uptime = CAPEX Penalty / Hourly OPEX Savings`**
 - *Result:* The algorithm self-adjusts. On days with flat pricing, it stretches the minimum uptime constraint to force continuous baseload operation. On highly volatile days, it shrinks the constraint, allowing the system to rapidly capitalize on severe price drops.
 
-#### 2. Sub-Interval Precision & Target Satisfaction
-The power grid exposes data in rigid 15-minute discrete blocks, but our production target (`TARGET_KG`) requires continuous precision. If constrained only to binary blocks, the system would constantly over-provision or under-provision.
-- The MILP model solves this using a hybrid variable space: it pairs a binary state variable (`y` for ON/OFF) with a continuous fractional variable (`x` for active duration).
-- This allows the solver to run at 100% capacity for a fraction of an interval (e.g., 9 minutes of a 15-minute block) and schedule a hard `SIGSTOP` the exact millisecond the quota is satisfied, preventing wasted OPEX.
+#### 2. Flow-Based Storage & Demand Constraints
+The system does not optimize for a naive, static daily production target. It operates as a true continuous-flow digital twin. 
+- **The Bathtub Model:** The solver tracks a continuous variable `s[i]` representing the physical kilograms of hydrogen in the storage tanks. 
+- For every 15-minute interval, it must satisfy the balance equation: `Storage = Previous Storage + Production - Interval Demand`.
+- **Terminal Constraints:** The solver is mathematically banned from exceeding the physical tank capacity, dipping below 0, or "cheating" by simply draining the tank to save OPEX. A terminal constraint ensures the tank finishes the day with at least the amount of hydrogen it started with.
 
-#### 3. Constraint Hardening (The "Ghost-Run" Loophole)
+#### 3. Sub-Interval Precision
+The power grid exposes data in rigid 15-minute discrete blocks, but physical systems require continuous precision.
+- The MILP model solves this using a hybrid variable space: it pairs a binary state variable (`y` for ON/OFF) with a continuous fractional variable (`x` for active duration).
+- This allows the solver to run at 100% capacity for a fraction of an interval (e.g., 9 minutes of a 15-minute block) and schedule a hard `SIGSTOP` the exact millisecond the storage quota is satisfied, preventing wasted OPEX.
+
+#### 4. Constraint Hardening (The "Ghost-Run" Loophole)
 Mathematical solvers are inherently "lazy" and will exploit any unbound edge cases. If instructed to maintain an "ON" state for 4 hours to avoid a shutdown penalty, the solver might attempt to run at a 0.01% fractional load, technically satisfying the state requirement without paying for electricity.
 - We harden the model against this using a strict adjacency constraint: `x[i] >= y[i] + y[i + 1] - 1`.
 - *Translation:* If the system claims to be continuously ON across multiple intervals, it **must** run at exactly 100% capacity and pay the full market rate. Fractional loads are strictly bounded to the terminal interval immediately preceding a state shutdown.
 
 ### The Outcome: Global vs. Local Optima
 By feeding raw market snapshots and real-time state data into the MILP solver, `micro-dao` completely avoids the pitfalls of local optima. The system will frequently choose to ignore a localized 15-minute dip in electricity prices if capturing it requires a state transition. Instead, it shifts the entire production block to a slightly more expensive, but completely contiguous time window, radically reducing unnecessary wear cycles while hitting precise production targets.
-
 
 ### Future Improvements
 
@@ -56,12 +61,13 @@ uv run src/main.py data/*
 ```
 
 ### What happens during execution?
-When you trigger the simulation, the engine performs the following pipeline:
-1. **Data Ingestion:** Parses the 15-minute resolution spot price snapshots (`JSON`).
-2. **State Initialization:** Spawns two isolated `DigitalTwin` instances (one for MILP, one for Greedy) starting at identical stack health levels.
-3. **Chronological Routing:** Feeds the daily snapshots into both optimization engines. 
-4. **State Mutation:** Calculates the physical wear (CAPEX) and electricity usage (OPEX) incurred by each schedule, permanently degrading the health of the respective `DigitalTwin` before passing it to the next day.
-5. **Reporting:** Outputs a daily terminal report and rolls up the compounding degradation into a final **Net Financial Impact** summary.
+When you trigger the simulation, the engine performs a direct 3-way benchmark to demonstrate the financial impact of the MILP model against standard industry logic, as well as benchmarking the underlying math engine itself.
+
+1. **[1] GREEDY EMS (Baseline):** Simulates a standard sorting algorithm that blindly chases cheap electricity, serving as our financial baseline.
+2. **[2] MILP (Heuristics ON):** The production-grade solver. Uses mathematical "guessing" (heuristics) to rapidly find the optimal integer paths, generally solving in ~1-5 seconds.
+3. **[3] MILP (Heuristics OFF):** Forces the CBC solver to ignore shortcuts and use pure Branch-and-Bound math to prove global optimality. Used to ensure the heuristics aren't trapping the system in a sub-optimal mathematical branch.
+
+The script tracks all 3 isolated `DigitalTwins` across the dataset and outputs a Terminal UI detailing the exact **OPEX**, **CAPEX**, **Avoided Cycles**, and **Solve Times** for each strategy.
 
 ### Simulating Degradation Behavior (The `--health` Flag)
 
@@ -83,4 +89,3 @@ As the stack degrades, it becomes highly sensitive to thermal cycling. The cost 
 ```bash
 uv run src/main.py --health 15.0 data/*
 ```
-

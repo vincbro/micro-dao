@@ -7,11 +7,13 @@ class PriceSnapshot:
         kwh_price_eur: float,
         start: datetime,
         end: datetime,
+        demand_kg: float = 0.0,
     ) -> None:
         self.kwh_price_sek = kwh_price_sek
         self.kwh_price_eur = kwh_price_eur
         self.start = start
         self.end = end
+        self.demand_kg = demand_kg
 
 
 class ScheduleState:
@@ -28,8 +30,9 @@ class ScheduleState:
         self.snapshot = snapshot
 
 class DigitalTwin:
-    def __init__(self, init_health_prec: float) -> None:
+    def __init__(self, init_health_prec: float, init_storage_kg: float = 100.0) -> None:
         self.health = init_health_prec / 100.0
+        self.current_storage_kg = init_storage_kg
 
         # Physics Constants
         self.BASE_EFFICIENCY = 50.0  # kWh required per kg when new
@@ -39,6 +42,7 @@ class DigitalTwin:
         self.BASE_WEAR_PER_CYCLE = 1.0 / self.MAX_LIFETIME_CYCLES
         self.STRESS_EXPONENT = 1.5  # Makes older stacks more fragile        
         self.REPLACEMENT_COST = 2_000_000 # The cost to replace a stack
+        self.MAX_STORAGE_KG = 500.0 # The max amount of hydrogen
       
     def current_efficiency_kwh_per_kg(self) -> float:
         # E_req(H) = E_base * (1 + delta_max * (1 - H))
