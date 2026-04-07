@@ -31,7 +31,7 @@ def main():
         "milp_off": {"opex": 0.0, "capex": 0.0, "starts": 0, "time_s": 0.0},
     }
 
-    print(f"Starting Multi-Day Simulation ({len(filepaths)} days)...")
+    print(f"Starting Multi-Day Simulation ({len(filepaths)} days)...\n")
 
     for path in filepaths:
         filename = os.path.basename(path)
@@ -64,8 +64,6 @@ def main():
         # ---------------------------------------------------------
         # 2. MILP (Heuristics ON - The Fast Guesser)
         # ---------------------------------------------------------
-        # Reset storage to 0 at the start of the day if we aren't tracking carry-over
-        milp_heur_on_twin.current_storage_kg = 0.0 
         
         t0 = time.time()
         milp_on_schedule = optimize_with_milp(
@@ -82,7 +80,6 @@ def main():
         # ---------------------------------------------------------
         # 3. MILP (Heuristics OFF - Pure Math)
         # ---------------------------------------------------------
-        milp_heur_off_twin.current_storage_kg = 0.0
         
         t0 = time.time()
         milp_off_schedule = optimize_with_milp(
@@ -109,8 +106,16 @@ def main():
         stats["milp_off"]["capex"] += daily_off_capex
         stats["milp_off"]["starts"] += daily_off_starts
 
-        # Optional: Hide the per-day printout if you only want the final summary
-        # print(f"Processed {filename} | Solver Times -> Greedy: {stats['greedy']['time_s']:.3f}s | MILP (ON): {stats['milp_on']['time_s']:.3f}s | MILP (OFF): {stats['milp_off']['time_s']:.3f}s")
+        # ---------------------------------------------------------
+        # Daily Visual Printout
+        # ---------------------------------------------------------
+        print("-" * 65)
+        print(f" DAY: {filename}")
+        print("-" * 65)
+        print_schedule_timeline(greedy_schedule, "Greedy EMS")
+        print()
+        print_schedule_timeline(milp_on_schedule, "MILP Solver ")
+        print()
 
     # ---------------------------------------------------------
     # Final Printout (Updated to show OPEX/CAPEX breakdown)
@@ -176,6 +181,33 @@ def calculate_cost(twin: DigitalTwin, schedule: list[ScheduleState], capacity_kw
             was_on = False
             
     return twin_copy, opex_cost, starts
+
+
+def print_schedule_timeline(schedule: list[ScheduleState], title: str):
+    """Compresses the hour-by-hour schedule into continuous ON/OFF blocks."""
+    print(f"     --- {title} Timeline ---")
+    if not schedule:
+        print("     No operations scheduled.")
+        return
+
+    current_state = schedule[0].on
+    start_time = schedule[0].start
+    last_time = schedule[0].end
+
+    for state in schedule[1:]:
+        if state.on == current_state:
+            last_time = state.end
+        else:
+            status = " ON" if current_state else "OFF"
+            print(f"     [{status}] {start_time.strftime('%H:%M')} -> {last_time.strftime('%H:%M')}")
+            
+            current_state = state.on
+            start_time = state.start
+            last_time = state.end
+
+    status = " ON" if current_state else "OFF"
+    print(f"     [{status}] {start_time.strftime('%H:%M')} -> {last_time.strftime('%H:%M')}")
+
 
 if __name__ == "__main__":
     main()
